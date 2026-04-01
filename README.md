@@ -32,15 +32,16 @@ poetry install
 
 Можно положить значения в файл `.env` в корне проекта (он в `.gitignore`).
 
-Запуск сервера:
+Запуск сервера (самый короткий вариант):
+
+```bash
+poetry run serve
+```
+
+Альтернативы:
 
 ```bash
 poetry run uvicorn gigachat_openai_proxy.main:app --host 0.0.0.0 --port 8000
-```
-
-или:
-
-```bash
 poetry run python -m gigachat_openai_proxy
 ```
 
