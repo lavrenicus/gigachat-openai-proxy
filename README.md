@@ -29,19 +29,41 @@ poetry install
 | `VERIFY_SSL` | `true` / `false` — при проблемах с корпоративным CA |
 | `CA_BUNDLE` | Путь к файлу CA вместо системного хранилища |
 | `TIMEOUT_SEC` | Таймаут HTTP к GigaChat и OAuth (по умолчанию `120`) |
+| `GIGACHAT_PROXY_DEBUG` | `true` / `1` — в лог сервера (INFO) писать URL и тело upstream-запроса к GigaChat и сырое тело ответа; для OAuth — только URL и `scope`, без ключей и токенов |
 
 Можно положить значения в файл `.env` в корне проекта (он в `.gitignore`).
 
-Запуск сервера (самый короткий вариант):
+Запуск сервера:
 
 ```bash
 poetry run serve
 ```
 
-Альтернативы:
+Отладочные логи upstream без правки `.env`:
+
+```bash
+poetry run serve --debug
+```
+
+(перед стартом выставляется `GIGACHAT_PROXY_DEBUG=true` в окружении процесса.)
+
+Команда `serve` — это entry point из `pyproject.toml`; он появляется в venv только после установки **самого проекта**. Сделайте из корня репозитория:
+
+```bash
+poetry install
+```
+
+Без флага `--no-root` (по умолчанию корневой пакет ставится). Если в prompt активирован другой интерпретатор (например Conda `(proxy_env)`), Poetry может путаться с окружением: в репозитории включён `poetry.toml` с `prefer-active-existing = false`, чтобы `poetry run` использовал venv Poetry. После смены настроек снова выполните `poetry install`.
+
+Если предупреждение про «script is not installed» остаётся или ставить проект не нужно, используйте запуск без консольного скрипта (зависимости `uvicorn` всё равно подтянуты):
 
 ```bash
 poetry run uvicorn gigachat_openai_proxy.main:app --host 0.0.0.0 --port 8000
+```
+
+или:
+
+```bash
 poetry run python -m gigachat_openai_proxy
 ```
 

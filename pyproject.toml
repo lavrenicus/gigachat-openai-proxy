@@ -3,6 +3,7 @@ name = "gigachat-openai-proxy"
 version = "0.1.0"
 description = "OpenAI-совместимый прокси для GigaChat"
 readme = "README.md"
+package-mode = true
 packages = [{ include = "gigachat_openai_proxy" }]
 
 [tool.poetry.scripts]
