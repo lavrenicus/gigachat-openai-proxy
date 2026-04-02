@@ -1,5 +1,4 @@
 import asyncio
-import json
 import logging
 import time
 import uuid
@@ -7,13 +6,14 @@ import uuid
 import httpx
 
 from gigachat_openai_proxy.mapping import auth_header
+from gigachat_openai_proxy.debug import pretty, pretty_text
 from gigachat_openai_proxy.settings import Settings, ssl_arg
 
 _log = logging.getLogger(__name__)
 
 
 def _json(obj: object) -> str:
-    return json.dumps(obj, ensure_ascii=False, default=str)
+    return pretty(obj)
 
 
 class GigachatClient:
@@ -66,13 +66,17 @@ class GigachatClient:
         tok = await self.bearer()
         url = f"{self._s.gigachat_api_base.rstrip('/')}/chat/completions"
         if self._s.gigachat_proxy_debug:
-            _log.info("gigachat chat request POST %s %s", url, _json(body))
+            _log.info("gigachat chat request POST %s\n%s", url, _json(body))
         r = await self._http.post(
             url,
             json=body,
             headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"},
         )
         if self._s.gigachat_proxy_debug:
-            _log.info("gigachat chat response status=%s %s", r.status_code, r.text)
+            _log.info(
+                "gigachat chat response status=%s\n%s",
+                r.status_code,
+                pretty_text(r.text),
+            )
         r.raise_for_status()
         return r.json()

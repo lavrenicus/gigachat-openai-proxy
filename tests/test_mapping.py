@@ -1,4 +1,5 @@
 from gigachat_openai_proxy.mapping import auth_header, openai_from_ollama, openai_response, upstream_body
+import json
 
 
 def test_upstream_maps_model_and_optional_fields():
@@ -35,18 +36,37 @@ def test_openai_response_usage_fallback():
 
 
 def test_openai_response_passes_usage():
-    u = {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+    u = {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3, "extra": 9}
     r = openai_response(
         {"choices": [{"message": {"role": "assistant", "content": ""}}], "usage": u},
         "gigachat",
     )
-    assert r["usage"] == u
+    assert r["usage"] == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
 
 
 def test_openai_from_ollama():
     r = openai_from_ollama({"message": {"role": "assistant", "content": "hi"}}, "gigachat")
     assert r["choices"][0]["message"]["content"] == "hi"
     assert r["object"] == "chat.completion"
+
+
+def test_openai_from_ollama_tool_calls():
+    r = openai_from_ollama(
+        {
+            "message": {
+                "role": "assistant",
+                "tool_calls": [
+                    {"function": {"name": "read_file", "arguments": {"path": "src/main.py"}}}
+                ],
+            }
+        },
+        "gigachat",
+    )
+    msg = r["choices"][0]["message"]
+    assert msg["content"] == ""
+    assert msg["tool_calls"][0]["function"]["name"] == "read_file"
+    args = json.loads(msg["tool_calls"][0]["function"]["arguments"])
+    assert args == {"path": "src/main.py"}
 
 
 def test_auth_header_adds_basic():

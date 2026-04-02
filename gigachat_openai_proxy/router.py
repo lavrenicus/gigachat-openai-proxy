@@ -24,11 +24,12 @@ def _msg_text(m: dict) -> str:
 
 
 def use_ollama(messages: list[dict]) -> bool:
-    if any(m.get("role") == "system" and "tool" in _msg_text(m).lower() for m in messages):
-        return True
-    return any(
-        any(marker in _msg_text(m) for marker in TOOL_MARKERS) for m in messages
-    )
+    # Роутим в Ollama только если в system-сообщении присутствует подсказка tool-протокола.
+    needle = "tool_name"
+    for m in messages:
+        if m.get("role") == "system" and needle in _msg_text(m).lower():
+            return True
+    return False
 
 
 def filter_gigachat_messages(messages: list[dict]) -> list[dict]:

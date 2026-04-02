@@ -4,12 +4,13 @@ import logging
 import httpx
 
 from gigachat_openai_proxy.settings import Settings
+from gigachat_openai_proxy.debug import pretty, pretty_text
 
 _log = logging.getLogger(__name__)
 
 
 def _json(obj: object) -> str:
-    return json.dumps(obj, ensure_ascii=False, default=str)
+    return pretty(obj)
 
 
 async def ollama_chat(
@@ -17,6 +18,9 @@ async def ollama_chat(
 ) -> dict:
     url = f"{s.ollama_base.rstrip('/')}/api/chat"
     payload: dict = {"model": s.ollama_model, "messages": messages, "stream": False}
+    tools = req.get("tools")
+    if isinstance(tools, list) and tools:
+        payload["tools"] = tools
     t, mt = req.get("temperature"), req.get("max_tokens")
     opt: dict = {}
     if t is not None:
@@ -26,9 +30,18 @@ async def ollama_chat(
     if opt:
         payload["options"] = opt
     if s.gigachat_proxy_debug:
-        _log.info("ollama request POST %s %s", url, _json(payload))
-    r = await http.post(url, json=payload)
+        _log.info("ollama request POST %s\n%s", url, _json(payload))
+    try:
+        r = await http.post(url, json=payload)
+    except httpx.HTTPError as e:
+        if s.gigachat_proxy_debug:
+            _log.error("ollama request failed: %s", e)
+        raise
     if s.gigachat_proxy_debug:
-        _log.info("ollama response status=%s %s", r.status_code, r.text)
+        _log.info(
+            "ollama response status=%s\n%s",
+            r.status_code,
+            pretty_text(r.text),
+        )
     r.raise_for_status()
     return r.json()
