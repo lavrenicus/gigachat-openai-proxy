@@ -44,6 +44,12 @@ htmlcov/
 .dmypy.json
 dmypy.json
 
+# Cursor
+.cursor/
+
+# Локальные CA / сертификаты (fetch-gigachat-ca, fetch-mincifry-ca)
+certs/
+
 # Editors / OS
 .idea/
 .vscode/
