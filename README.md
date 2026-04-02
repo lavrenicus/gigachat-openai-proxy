@@ -28,10 +28,7 @@ poetry install
 |------------|----------|
 | `GIGACHAT_AUTHORIZATION_KEY` | Ключ авторизации (Base64; в заголовок подставляется как `Basic …`, если префикса нет) |
 | `GIGACHAT_SCOPE` | По умолчанию `GIGACHAT_API_PERS` |
-| `VERIFY_SSL` | `true` / `false` — при проблемах с корпоративным CA |
-| `CA_BUNDLE` | Путь к файлу CA вместо системного хранилища |
 | `TIMEOUT_SEC` | Таймаут HTTP к GigaChat и OAuth (по умолчанию `120`) |
-| `GIGACHAT_PROXY_DEBUG` | `true` / `1` — в лог (INFO) тела запросов/ответов к GigaChat и Ollama; для OAuth — только URL и `scope` |
 | `OLLAMA_BASE` | База Ollama (по умолчанию `http://localhost:11434`) |
 | `OLLAMA_MODEL` | Модель для ветки tools (по умолчанию `qwen2.5-coder:7b`) |
 | `OLLAMA_TIMEOUT_SEC` | Таймаут HTTP к Ollama (по умолчанию `120`) |
@@ -44,13 +41,13 @@ poetry install
 poetry run serve
 ```
 
-Отладочные логи upstream без правки `.env`:
+Отладочные логи upstream (тела запросов/ответов к GigaChat и Ollama):
 
 ```bash
 poetry run serve --debug
 ```
 
-(перед стартом выставляется `GIGACHAT_PROXY_DEBUG=true` в окружении процесса.)
+Флаги TLS для `serve` (не через `.env`): `--mincifry-ca` (докачать PEM при старте), `--no-verify-ssl` (только если осознанно нужно обойти проверку).
 
 Флаг ищется как отдельный аргумент `--debug` в `sys.argv`, поэтому он срабатывает даже при предупреждении Poetry про «script is not installed». При включённом debug для логгера `gigachat_openai_proxy` добавляется вывод в stderr, чтобы строки upstream не терялись рядом с логами uvicorn.
 
@@ -108,9 +105,33 @@ poetry run python -m gigachat_openai_proxy
 poetry run pytest tests -q
 ```
 
+## Сертификаты для GigaChat (официально, Сбер)
+
+По документации: [Использование сертификатов Минцифры в GigaChat](https://developers.sber.ru/docs/ru/gigachat/certificates) — нужны корневой и выпускающий из `gu-st.ru`.
+
+Скачать в проект (в `certs/`, плюс общий `certs/ca.pem` для прокси):
+
+```bash
+poetry run fetch-gigachat-ca
+```
+
+URL в коде те же, что в доке:  
+`https://gu-st.ru/content/lending/russian_trusted_root_ca_pem.crt`,  
+`https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt`.
+
+Прокси **автоматически** подхватывает `certs/ca.pem`, иначе — `certs/mincifry.pem` (см. ниже).
+
+## Альтернатива: корень с репозитория УЦ ГИС
+
+```bash
+poetry run fetch-mincifry-ca
+```
+
+Кладёт `certs/mincifry.pem`; для GigaChat предпочтительнее **`fetch-gigachat-ca`**.
+
 ## Замечания
 
-- **TLS**: при ошибках сертификата используйте корневой CA (`CA_BUNDLE`) или отключите проверку только осознанно (`VERIFY_SSL=false`).
+- **TLS / GigaChat**: при `CERTIFICATE_VERIFY_FAILED` сначала выполните `poetry run fetch-gigachat-ca` и перезапустите прокси.
 - **Доступ из‑за границы**: API GigaChat ориентирован на РФ; при необходимости поднимайте прокси на VPS в подходящей зоне.
 - **Контекст**: прокси stateless — весь диалог должен приходить в `messages`, как у OpenAI.
 

@@ -14,7 +14,7 @@ def _json(obj: object) -> str:
 
 
 async def ollama_chat(
-    http: httpx.AsyncClient, s: Settings, messages: list[dict], req: dict
+    http: httpx.AsyncClient, s: Settings, messages: list[dict], req: dict, debug: bool = False
 ) -> dict:
     url = f"{s.ollama_base.rstrip('/')}/api/chat"
     payload: dict = {"model": s.ollama_model, "messages": messages, "stream": False}
@@ -29,15 +29,15 @@ async def ollama_chat(
         opt["num_predict"] = mt
     if opt:
         payload["options"] = opt
-    if s.gigachat_proxy_debug:
+    if debug:
         _log.info("ollama request POST %s\n%s", url, _json(payload))
     try:
         r = await http.post(url, json=payload)
     except httpx.HTTPError as e:
-        if s.gigachat_proxy_debug:
+        if debug:
             _log.error("ollama request failed: %s", e)
         raise
-    if s.gigachat_proxy_debug:
+    if debug:
         _log.info(
             "ollama response status=%s\n%s",
             r.status_code,

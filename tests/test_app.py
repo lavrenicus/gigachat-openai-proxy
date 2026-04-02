@@ -2,7 +2,8 @@ import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from gigachat_openai_proxy.main import app, gc_client, ollama_http, settings
+from gigachat_openai_proxy.main import app, gc_client, ollama_http, settings, config
+from gigachat_openai_proxy.app_config import AppConfig
 from gigachat_openai_proxy.settings import Settings
 
 
@@ -43,6 +44,7 @@ async def test_chat_completions_roundtrip(fake_gc: FakeGC):
     )
     app.dependency_overrides[gc_client] = lambda: fake_gc
     app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
     app.dependency_overrides[ollama_http] = _ollama_unused_stub
     try:
         transport = ASGITransport(app=app)
@@ -66,6 +68,7 @@ async def test_gigachat_filters_system(fake_gc: FakeGC):
     s = Settings(gigachat_authorization_key="k")
     app.dependency_overrides[gc_client] = lambda: fake_gc
     app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
     app.dependency_overrides[ollama_http] = _ollama_unused_stub
     try:
         transport = ASGITransport(app=app)
@@ -97,6 +100,7 @@ async def test_routes_to_ollama(fake_gc: FakeGC):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as oh:
         app.dependency_overrides[gc_client] = lambda: fake_gc
         app.dependency_overrides[settings] = lambda: s
+        app.dependency_overrides[config] = lambda: AppConfig()
         app.dependency_overrides[ollama_http] = lambda: oh
         try:
             transport = ASGITransport(app=app)
@@ -154,6 +158,7 @@ async def test_routes_to_ollama_when_tools_present(fake_gc: FakeGC):
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as oh:
         app.dependency_overrides[gc_client] = lambda: fake_gc
         app.dependency_overrides[settings] = lambda: s
+        app.dependency_overrides[config] = lambda: AppConfig()
         app.dependency_overrides[ollama_http] = lambda: oh
         try:
             transport = ASGITransport(app=app)
@@ -200,6 +205,7 @@ async def test_tools_without_system_tool_name_routes_to_gigachat(fake_gc: FakeGC
 
     app.dependency_overrides[gc_client] = lambda: fake_gc
     app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
     app.dependency_overrides[ollama_http] = _ollama_unused_stub
     try:
         transport = ASGITransport(app=app)
@@ -220,6 +226,7 @@ async def test_sequential_requests(fake_gc: FakeGC):
     s = Settings(gigachat_authorization_key="k")
     app.dependency_overrides[gc_client] = lambda: fake_gc
     app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
     app.dependency_overrides[ollama_http] = _ollama_unused_stub
     try:
         transport = ASGITransport(app=app)
@@ -242,6 +249,7 @@ async def test_stream_true_returns_sse(fake_gc: FakeGC):
     )
     app.dependency_overrides[gc_client] = lambda: fake_gc
     app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
     app.dependency_overrides[ollama_http] = _ollama_unused_stub
     try:
         transport = ASGITransport(app=app)

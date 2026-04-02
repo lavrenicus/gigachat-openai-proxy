@@ -9,17 +9,9 @@ class Settings(BaseSettings):
     gigachat_model: str = "GigaChat:latest"
     gigachat_authorization_key: str  # Base64 key from кабинет (без префикса Basic)
     gigachat_scope: str = "GIGACHAT_API_PERS"
-    verify_ssl: bool = True
-    ca_bundle: str | None = None
     timeout_sec: float = 120.0
     token_skew_sec: float = 60.0
-    gigachat_proxy_debug: bool = False  # env GIGACHAT_PROXY_DEBUG — лог upstream (GigaChat/Ollama)
 
     ollama_base: str = "http://localhost:11434"
     ollama_model: str = "qwen2.5-coder:7b"
     ollama_timeout_sec: float = 120.0
-
-def ssl_arg(s: Settings) -> bool | str:
-    if not s.verify_ssl:
-        return False
-    return s.ca_bundle if s.ca_bundle else True

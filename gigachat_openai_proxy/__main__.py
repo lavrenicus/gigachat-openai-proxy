@@ -1,19 +1,23 @@
-import os
 import sys
 
 import uvicorn
 
+from gigachat_openai_proxy.app_config import AppConfig
+from gigachat_openai_proxy.main import create_app
 
-def apply_serve_cli_to_environ(argv: list[str] | None = None) -> None:
-    # Точное вхождение токена: обходит кривой sys.argv у poetry run <script> без poetry install
-    args = sys.argv[1:] if argv is None else argv
-    if "--debug" in args:
-        os.environ["GIGACHAT_PROXY_DEBUG"] = "true"
+def _has(argv: list[str], flag: str) -> bool:
+    return flag in argv
 
 
 def main() -> None:
-    apply_serve_cli_to_environ()
-    uvicorn.run("gigachat_openai_proxy.main:app", host="0.0.0.0", port=8000)
+    args = sys.argv[1:]
+    cfg = AppConfig(
+        debug=_has(args, "--debug"),
+        verify_ssl=not _has(args, "--no-verify-ssl"),
+        use_mincifry_ca=_has(args, "--mincifry-ca"),
+    )
+    app = create_app(c=cfg)
+    uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":

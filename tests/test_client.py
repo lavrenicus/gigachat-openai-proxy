@@ -49,10 +49,9 @@ async def test_debug_logs_upstream(caplog):
     s = Settings(
         gigachat_authorization_key="k",
         gigachat_oauth_url="https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
-        gigachat_proxy_debug=True,
     )
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        c = GigachatClient(s, http=http)
+        c = GigachatClient(s, http=http, debug=True)
         await c.chat({"model": "GigaChat:latest", "messages": [{"role": "user", "content": "привет"}]})
         await c.aclose()
     text = " ".join(r.message for r in caplog.records)

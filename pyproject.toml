@@ -8,6 +8,8 @@ packages = [{ include = "gigachat_openai_proxy" }]
 
 [tool.poetry.scripts]
 serve = "gigachat_openai_proxy.__main__:main"
+fetch-mincifry-ca = "gigachat_openai_proxy.fetch_mincifry_ca:main"
+fetch-gigachat-ca = "gigachat_openai_proxy.fetch_gigachat_ca:main"
 
 [tool.poetry.dependencies]
 python = "^3.10"

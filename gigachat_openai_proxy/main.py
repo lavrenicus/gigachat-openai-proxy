@@ -8,11 +8,14 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from gigachat_openai_proxy.app_config import AppConfig
 from gigachat_openai_proxy.client import GigachatClient
 from gigachat_openai_proxy.mapping import openai_from_ollama, openai_response, upstream_body
 from gigachat_openai_proxy.ollama_client import ollama_chat
+from gigachat_openai_proxy.pipeline import Envelope, Pipeline
 from gigachat_openai_proxy.router import filter_gigachat_messages, use_ollama
 from gigachat_openai_proxy.settings import Settings
+from gigachat_openai_proxy.tls import verify_arg
 from gigachat_openai_proxy.debug import pretty_openai_chat_response
 
 
@@ -35,23 +38,6 @@ class ChatReq(BaseModel):
     tools: list[dict] | None = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    s = Settings()
-    if s.gigachat_proxy_debug:
-        _setup_proxy_debug_logging()
-    app.state.settings = s
-    gc = GigachatClient(s)
-    app.state.gc = gc
-    app.state.ollama_http = httpx.AsyncClient(timeout=s.ollama_timeout_sec)
-    yield
-    await app.state.ollama_http.aclose()
-    await gc.aclose()
-
-
-app = FastAPI(title="GigaChat OpenAI proxy", lifespan=lifespan)
-
-
 def gc_client(request: Request) -> GigachatClient:
     return request.app.state.gc
 
@@ -60,53 +46,131 @@ def settings(request: Request) -> Settings:
     return request.app.state.settings
 
 
+def config(request: Request) -> AppConfig:
+    return request.app.state.config
+
+
 def ollama_http(request: Request) -> httpx.AsyncClient:
     return request.app.state.ollama_http
 
 
-@app.post("/v1/chat/completions")
-async def chat_completions(
-    req: ChatReq,
-    gc: GigachatClient = Depends(gc_client),
-    s: Settings = Depends(settings),
-    ohttp: httpx.AsyncClient = Depends(ollama_http),
-) -> Any:
-    try:
-        dump = req.model_dump()
-        if s.gigachat_proxy_debug:
-            logging.getLogger("gigachat_openai_proxy").info("proxy incoming /v1/chat/completions %s", pretty_openai_chat_response(dump))
-        wants_stream = bool(req.stream)
-        if use_ollama(req.messages):
-            raw_o = await ollama_chat(ohttp, s, req.messages, dump)
-            out = openai_from_ollama(raw_o, req.model)
+async def pipeline(request: Request) -> Pipeline:
+    return request.app.state.pipeline
+
+
+def _verify_arg(s: Settings, c: AppConfig):
+    if c.use_mincifry_ca:
+        from gigachat_openai_proxy.mincifry_ca import ensure_ca_bundle
+
+        ensure_ca_bundle(c.mincifry_ca_path, url=c.mincifry_ca_url)
+    return verify_arg(c.verify_ssl, c.ca_bundle)
+
+
+def create_app(s: Settings | None = None, c: AppConfig | None = None) -> FastAPI:
+    cfg = c or AppConfig()
+    st = s or Settings()
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        if cfg.debug:
+            _setup_proxy_debug_logging()
+        app.state.settings = st
+        app.state.config = cfg
+        app.state.gc = GigachatClient(st, verify=_verify_arg(st, cfg), debug=cfg.debug)
+        app.state.ollama_http = httpx.AsyncClient(timeout=st.ollama_timeout_sec)
+        app.state.pipeline = Pipeline(queue_size=cfg.pipeline_queue_size, workers=cfg.pipeline_workers)
+        await app.state.pipeline.start()
+        yield
+        await app.state.pipeline.aclose()
+        await app.state.ollama_http.aclose()
+        await app.state.gc.aclose()
+
+    app = FastAPI(title="GigaChat OpenAI proxy", lifespan=lifespan)
+    _mount_routes(app)
+    return app
+
+
+def _mount_routes(app: FastAPI) -> None:
+    @app.post("/v1/chat/completions")
+    async def chat_completions(
+        req: ChatReq,
+        gc: GigachatClient = Depends(gc_client),
+        s: Settings = Depends(settings),
+        ohttp: httpx.AsyncClient = Depends(ollama_http),
+        cfg: AppConfig = Depends(config),
+    ) -> Any:
+        try:
+            dump = req.model_dump()
+            if cfg.debug:
+                logging.getLogger("gigachat_openai_proxy").info(
+                    "proxy incoming /v1/chat/completions %s", pretty_openai_chat_response(dump)
+                )
+            wants_stream = bool(req.stream)
+            if use_ollama(req.messages):
+                raw_o = await ollama_chat(ohttp, s, req.messages, dump, debug=cfg.debug)
+                out = openai_from_ollama(raw_o, req.model)
+                return (
+                    JSONResponse(out)
+                    if (not wants_stream or out["choices"][0]["message"].get("tool_calls"))
+                    else StreamingResponse(_openai_chat_to_sse(out), media_type="text/event-stream")
+                )
+            dump["messages"] = filter_gigachat_messages(dump["messages"])
+            raw = await gc.chat(upstream_body(dump, s.gigachat_model))
+            out = openai_response(raw, req.model)
+            if cfg.debug:
+                logging.getLogger("gigachat_openai_proxy").info(
+                    "proxy returning OpenAI JSON\n%s", pretty_openai_chat_response(out)
+                )
             return (
                 JSONResponse(out)
-                if (not wants_stream or out["choices"][0]["message"].get("tool_calls"))
-                else StreamingResponse(
-                    _openai_chat_to_sse(out), media_type="text/event-stream"
-                )
+                if not wants_stream
+                else StreamingResponse(_openai_chat_to_sse(out), media_type="text/event-stream")
             )
-        dump["messages"] = filter_gigachat_messages(dump["messages"])
-        raw = await gc.chat(upstream_body(dump, s.gigachat_model))
-        out = openai_response(raw, req.model)
-        if s.gigachat_proxy_debug:
-            logging.getLogger("gigachat_openai_proxy").info(
-                "proxy returning OpenAI JSON\n%s", pretty_openai_chat_response(out)
-            )
-        return (
-            JSONResponse(out)
-            if not wants_stream
-            else StreamingResponse(_openai_chat_to_sse(out), media_type="text/event-stream")
-        )
-    except httpx.HTTPStatusError as e:
-        detail = e.response.text
-        try:
-            detail = e.response.json()
-        except Exception:
-            pass
-        raise HTTPException(status_code=e.response.status_code, detail=detail)
-    except httpx.HTTPError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        except httpx.HTTPStatusError as e:
+            detail = e.response.text
+            try:
+                detail = e.response.json()
+            except Exception:
+                pass
+            raise HTTPException(status_code=e.response.status_code, detail=detail)
+        except httpx.HTTPError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
+    @app.post("/v1/pipeline/ingest")
+    async def pipeline_ingest(
+        env: Envelope,
+        request: Request,
+        cfg: AppConfig = Depends(config),
+        pl: Pipeline = Depends(pipeline),
+    ) -> dict:
+        _check_generator_token(request, cfg)
+        return {"id": pl.submit(env)}
+
+    @app.get("/v1/pipeline/result/{id}")
+    async def pipeline_result(id: str, pl: Pipeline = Depends(pipeline)) -> dict:
+        r = pl.get(id)
+        if not r:
+            raise HTTPException(status_code=404, detail="not found")
+        return r.model_dump()
+
+    @app.post("/v1/pipeline/process")
+    async def pipeline_process(env: Envelope, pl: Pipeline = Depends(pipeline), timeout_sec: float = 30.0) -> dict:
+        pid = pl.submit(env)
+        r = await pl.wait(pid, timeout_sec=timeout_sec)
+        assert r
+        return r.model_dump()
+
+
+app = create_app()
+
+
+def _check_generator_token(req: Request, cfg: AppConfig) -> None:
+    tok = cfg.pipeline_generator_token
+    if not tok:
+        return
+    got = req.headers.get("x-generator-token")
+    if got != tok:
+        raise HTTPException(status_code=401, detail="bad generator token")
 
 
 def _openai_chat_to_sse(out: dict):
