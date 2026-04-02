@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -24,3 +25,9 @@ def test_debug_flag_sets_env(clean_debug_env):
 def test_no_flag_leaves_env(clean_debug_env):
     apply_serve_cli_to_environ([])
     assert "GIGACHAT_PROXY_DEBUG" not in os.environ
+
+
+def test_debug_from_sys_argv(monkeypatch, clean_debug_env):
+    monkeypatch.setattr(sys, "argv", ["serve", "--debug"])
+    apply_serve_cli_to_environ()
+    assert os.environ["GIGACHAT_PROXY_DEBUG"] == "true"

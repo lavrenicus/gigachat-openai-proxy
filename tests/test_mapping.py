@@ -1,4 +1,4 @@
-from gigachat_openai_proxy.mapping import auth_header, openai_response, upstream_body
+from gigachat_openai_proxy.mapping import auth_header, openai_from_ollama, openai_response, upstream_body
 
 
 def test_upstream_maps_model_and_optional_fields():
@@ -41,6 +41,12 @@ def test_openai_response_passes_usage():
         "gigachat",
     )
     assert r["usage"] == u
+
+
+def test_openai_from_ollama():
+    r = openai_from_ollama({"message": {"role": "assistant", "content": "hi"}}, "gigachat")
+    assert r["choices"][0]["message"]["content"] == "hi"
+    assert r["object"] == "chat.completion"
 
 
 def test_auth_header_adds_basic():

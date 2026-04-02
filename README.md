@@ -1,13 +1,15 @@
 # gigachat-openai-proxy
 
-Тонкий прокси **OpenAI Chat Completions → GigaChat**: клиент шлёт привычный JSON, сервис ходит в GigaChat с OAuth и отдаёт ответ в формате, совместимом с OpenAI (удобно для Continue и других инструментов).
+Тонкий прокси **OpenAI Chat Completions**: обычный диалог идёт в **GigaChat**, запросы с признаками tool/агента — в **Ollama** (локально). Ответ всегда в формате OpenAI, Continue видит одну модель.
 
 ## Возможности
 
 - Один синхронный маршрут: `POST /v1/chat/completions`
-- Маппинг модели: вход `model: gigachat` (или любой другой) → upstream `GigaChat:latest` (настраивается)
-- Кеш access token (~30 минут) с обновлением по `expires_at`
-- Без streaming, tools, function calling и embeddings
+- Роутинг: эвристика по тексту сообщений (маркеры вроде `read_file`, `прочитай файл`, …) или `system` с подстрокой `tool` → **только Ollama**; иначе → **только GigaChat** (без смешивания в одном запросе)
+- Перед GigaChat из списка сообщений убираются роли `system`, чтобы не провоцировать лишние tool-ответы
+- GigaChat: `GIGACHAT_MODEL` (по умолчанию `GigaChat:latest`), OAuth и кеш токена
+- Ollama: `POST {OLLAMA_BASE}/api/chat`, модель `OLLAMA_MODEL` (по умолчанию `qwen2.5-coder:7b`)
+- Без streaming и без отдельного OpenAI tool-calling протокола на стороне прокси
 
 ## Требования
 
@@ -29,7 +31,10 @@ poetry install
 | `VERIFY_SSL` | `true` / `false` — при проблемах с корпоративным CA |
 | `CA_BUNDLE` | Путь к файлу CA вместо системного хранилища |
 | `TIMEOUT_SEC` | Таймаут HTTP к GigaChat и OAuth (по умолчанию `120`) |
-| `GIGACHAT_PROXY_DEBUG` | `true` / `1` — в лог сервера (INFO) писать URL и тело upstream-запроса к GigaChat и сырое тело ответа; для OAuth — только URL и `scope`, без ключей и токенов |
+| `GIGACHAT_PROXY_DEBUG` | `true` / `1` — в лог (INFO) тела запросов/ответов к GigaChat и Ollama; для OAuth — только URL и `scope` |
+| `OLLAMA_BASE` | База Ollama (по умолчанию `http://localhost:11434`) |
+| `OLLAMA_MODEL` | Модель для ветки tools (по умолчанию `qwen2.5-coder:7b`) |
+| `OLLAMA_TIMEOUT_SEC` | Таймаут HTTP к Ollama (по умолчанию `120`) |
 
 Можно положить значения в файл `.env` в корне проекта (он в `.gitignore`).
 
@@ -46,6 +51,8 @@ poetry run serve --debug
 ```
 
 (перед стартом выставляется `GIGACHAT_PROXY_DEBUG=true` в окружении процесса.)
+
+Флаг ищется как отдельный аргумент `--debug` в `sys.argv`, поэтому он срабатывает даже при предупреждении Poetry про «script is not installed». При включённом debug для логгера `gigachat_openai_proxy` добавляется вывод в stderr, чтобы строки upstream не терялись рядом с логами uvicorn.
 
 Команда `serve` — это entry point из `pyproject.toml`; он появляется в venv только после установки **самого проекта**. Сделайте из корня репозитория:
 

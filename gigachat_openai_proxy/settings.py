@@ -13,7 +13,11 @@ class Settings(BaseSettings):
     ca_bundle: str | None = None
     timeout_sec: float = 120.0
     token_skew_sec: float = 60.0
-    gigachat_proxy_debug: bool = False  # env GIGACHAT_PROXY_DEBUG — лог тел запроса/ответа к GigaChat
+    gigachat_proxy_debug: bool = False  # env GIGACHAT_PROXY_DEBUG — лог upstream (GigaChat/Ollama)
+
+    ollama_base: str = "http://localhost:11434"
+    ollama_model: str = "qwen2.5-coder:7b"
+    ollama_timeout_sec: float = 120.0
 
 def ssl_arg(s: Settings) -> bool | str:
     if not s.verify_ssl:

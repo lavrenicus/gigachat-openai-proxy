@@ -11,6 +11,22 @@ def upstream_body(req: dict, gigachat_model: str) -> dict:
     return out
 
 
+def openai_from_ollama(ollama_json: dict, client_model: str) -> dict:
+    c = ollama_json["message"]["content"]
+    return openai_response(
+        {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": c},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        },
+        client_model,
+    )
+
+
 def openai_response(gc: dict, client_model: str) -> dict:
     ch0 = gc["choices"][0]
     msg = ch0["message"]

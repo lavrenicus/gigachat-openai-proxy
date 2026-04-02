@@ -1,14 +1,13 @@
-import argparse
 import os
+import sys
 
 import uvicorn
 
 
 def apply_serve_cli_to_environ(argv: list[str] | None = None) -> None:
-    p = argparse.ArgumentParser(prog="serve")
-    p.add_argument("--debug", action="store_true", help="Эквивалент GIGACHAT_PROXY_DEBUG=true")
-    args, _ = p.parse_known_args(argv)
-    if args.debug:
+    # Точное вхождение токена: обходит кривой sys.argv у poetry run <script> без poetry install
+    args = sys.argv[1:] if argv is None else argv
+    if "--debug" in args:
         os.environ["GIGACHAT_PROXY_DEBUG"] = "true"
 
 
