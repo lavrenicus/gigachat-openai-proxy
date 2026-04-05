@@ -1,5 +1,4 @@
 import json
-import re
 
 from gigachat_openai_proxy.mapping import upstream_body
 from gigachat_openai_proxy.router import filter_gigachat_messages
@@ -17,6 +16,11 @@ PLANNER_SYSTEM = (
     "Ты планировщик. Разбери задачу: нужны ли read_file/read_dir или достаточно ответа текстом.\n"
     "В диалоге могут быть user-сообщения с префиксом [tool_result] — JSON с полями tool, args, result; "
     "учитывай их при следующем решении.\n"
+    "Если в user-тексте уже есть блок ```имя_файла с новой строкой и далее содержимое того же файла, "
+    "не выбирай read_file для этого пути — верни action=final и ответ по уже приведённому содержимому.\n"
+    "Если read_file вернул not found, а раньше в user был такой фенс с тем же именем файла — снова final по фенсу, "
+    "не повторяй read_file с тем же путём.\n"
+    "Разрешены только action: final, tool (только read_file/read_dir), read_file, read_dir. write_file и прочие запрещены.\n"
     "Ты ОБЯЗАН отвечать только одним валидным JSON-объектом. Запрещено: любой текст вне JSON, комментарии, markdown. "
     "Если не уверен — всё равно верни JSON (например action=final с пояснением в answer). "
     "При нарушении формата запрос будет отклонён.\n"
@@ -46,21 +50,17 @@ def _strip_markdown_fence(t: str) -> str:
 
 def _extract_json_object(text: str) -> dict:
     t = _strip_markdown_fence((text or "").strip())
-    i, j = t.find("{"), t.rfind("}")
-    if i >= 0 and j > i:
+    dec = json.JSONDecoder()
+    for i, ch in enumerate(t):
+        if ch != "{":
+            continue
         try:
-            obj = json.loads(t[i : j + 1])
+            obj, _ = dec.raw_decode(t, i)
             if isinstance(obj, dict):
                 return obj
         except json.JSONDecodeError:
-            pass
-    m = re.search(r"\{[\s\S]*\}", t)
-    if not m:
-        raise ValueError("no json object")
-    obj = json.loads(m.group(0))
-    if not isinstance(obj, dict):
-        raise ValueError("not object")
-    return obj
+            continue
+    raise ValueError("no json object")
 
 
 def parse_plan(text: str) -> dict:

@@ -41,6 +41,11 @@ def test_parse_plan_strips_prefix_suffix():
     assert parse_plan(t)["answer"] == "yes"
 
 
+def test_parse_plan_first_object_when_two_json_blobs():
+    t = '{"action":"read_file","args":{"path":"x"}}\n\n{"action":"final","answer":"y"}'
+    assert parse_plan(t)["action"] == "read_file"
+
+
 def test_parse_plan_invalid():
     with pytest.raises(ValueError):
         parse_plan("not json")

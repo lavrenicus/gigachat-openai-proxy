@@ -69,20 +69,27 @@ class GigachatClient:
             return self._token
 
     async def chat(self, body: dict) -> dict:
-        tok = await self.bearer()
         url = f"{self._s.gigachat_api_base.rstrip('/')}/chat/completions"
-        if self._debug:
-            _log.info("gigachat chat request POST %s\n%s", url, _json(body))
-        r = await self._http.post(
-            url,
-            json=body,
-            headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"},
-        )
-        if self._debug:
-            _log.info(
-                "gigachat chat response status=%s\n%s",
-                r.status_code,
-                pretty_text(r.text),
+        for attempt in range(2):
+            tok = await self.bearer()
+            if self._debug:
+                _log.info("gigachat chat request POST %s\n%s", url, _json(body))
+            r = await self._http.post(
+                url,
+                json=body,
+                headers={"Authorization": f"Bearer {tok}", "Accept": "application/json"},
             )
-        r.raise_for_status()
-        return r.json()
+            if self._debug:
+                _log.info(
+                    "gigachat chat response status=%s\n%s",
+                    r.status_code,
+                    pretty_text(r.text),
+                )
+            if r.status_code == 401 and attempt == 0:
+                async with self._lock:
+                    self._token = None
+                    self._exp = 0.0
+                continue
+            r.raise_for_status()
+            return r.json()
+        raise RuntimeError("gigachat chat unreachable")

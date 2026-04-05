@@ -221,6 +221,62 @@ async def test_plan_read_dir_action_executes_read_dir(caplog, fake_gc: FakeGC):
 
 
 @pytest.mark.asyncio
+async def test_custom_model_name_still_runs_planner(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [{"action": "final", "answer": "ok"}]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "my-openai-alias", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert r.status_code == 200
+        assert r.json()["model"] == "my-openai-alias"
+        assert str(fake_gc.history[0]["messages"][0].get("content", "")).startswith("Ты планировщик")
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_read_file_inline_fence_skips_disk(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [
+        {"action": "read_file", "args": {"path": "TODO.MD"}},
+        {"action": "final", "answer": "done"},
+    ]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gigachat",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "open\n```TODO.MD\n###INLINE###\n```\n",
+                        }
+                    ],
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "done"
+        tr = fake_gc.history[1]["messages"][-1]["content"].split(" ", 1)[1]
+        assert json.loads(tr)["result"] == "###INLINE###"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_plan_read_file_action_executes_read_file(fake_gc: FakeGC):
     s = Settings(gigachat_authorization_key="k")
     fake_gc.plans = [

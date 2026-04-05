@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 from gigachat_openai_proxy.app_config import AppConfig
 from gigachat_openai_proxy.client import GigachatClient
+from gigachat_openai_proxy.inline_file import inline_file_body_for_path
 from gigachat_openai_proxy.mapping import openai_from_text, openai_response, upstream_body
 from gigachat_openai_proxy.ollama_tools import run_executor
 from gigachat_openai_proxy.planner import (
@@ -75,10 +76,14 @@ async def _planner_agent(
         if orig in PLAN_DIRECT_TOOLS:
             _lg.info("Mapped action '%s' → tool='%s'", orig, orig)
             plan = {**plan, "action": "tool", "tool": orig}
-        res = run_executor(plan["tool"], plan["args"])
-        payload = json.dumps(
-            {"tool": plan["tool"], "args": plan["args"], "result": res}, ensure_ascii=False
-        )
+        tool, args = plan["tool"], plan["args"] if isinstance(plan.get("args"), dict) else {}
+        if tool == "read_file":
+            pth = str((args or {}).get("path") or "")
+            inl = inline_file_body_for_path(state, pth)
+            res = inl if inl is not None else run_executor(tool, args)
+        else:
+            res = run_executor(tool, args)
+        payload = json.dumps({"tool": tool, "args": args, "result": res}, ensure_ascii=False)
         if debug:
             _lg.info("agent step=%s tool_result=%s", step, _trunc_log(payload))
         # GigaChat: только одно system и оно только первое — служебный контекст в user.
