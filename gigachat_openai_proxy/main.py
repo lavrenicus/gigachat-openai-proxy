@@ -38,6 +38,34 @@ class ChatReq(BaseModel):
     tools: list[dict] | None = None
 
 
+_TITLE_HINTS = (
+    "title for the chat",
+    "title for a conversation",
+    "descriptive title",
+    "reply with a title",
+    "generate a short",
+    "3-4 words",
+    "3-7 words",
+    "chat title",
+    "words in length",
+    "given the following",
+    "название чата",
+    "заголовок чата",
+)
+
+
+def _is_title_generation_request(req: ChatReq) -> bool:
+    mt = req.max_tokens
+    if mt is None or mt > 128:
+        return False
+    blob = " ".join(
+        str(m.get("content") or "").lower()
+        for m in req.messages
+        if m.get("role") in ("user", "system")
+    )
+    return any(h in blob for h in _TITLE_HINTS)
+
+
 def _trunc_log(s: str, limit: int = _LOG_RESULT_LEN) -> str:
     return s if len(s) <= limit else f"{s[:limit]}\n...[truncated]"
 
@@ -91,6 +119,13 @@ async def _planner_agent(
     if debug:
         _lg.info("agent stopped: max_steps=%s", _MAX_AGENT_STEPS)
     return openai_from_text("Лимит шагов планировщика исчерпан.", req.model)
+
+
+async def _direct_title_chat(
+    gc: GigachatClient, req: ChatReq, dump: dict, gigachat_model: str
+) -> dict:
+    raw = await gc.chat(upstream_body({**dump, "messages": list(req.messages)}, gigachat_model))
+    return openai_response(raw, req.model)
 
 
 def _setup_proxy_debug_logging() -> None:
@@ -170,7 +205,11 @@ def _mount_routes(app: FastAPI) -> None:
                     "proxy incoming /v1/chat/completions %s", pretty_openai_chat_response(dump)
                 )
             wants_stream = bool(req.stream)
-            out = await _planner_agent(gc, req, dump, s.gigachat_model, debug=cfg.debug)
+            out = (
+                await _direct_title_chat(gc, req, dump, s.gigachat_model)
+                if _is_title_generation_request(req)
+                else await _planner_agent(gc, req, dump, s.gigachat_model, debug=cfg.debug)
+            )
             if cfg.debug:
                 logging.getLogger("gigachat_openai_proxy").info(
                     "proxy returning OpenAI JSON\n%s", pretty_openai_chat_response(out)

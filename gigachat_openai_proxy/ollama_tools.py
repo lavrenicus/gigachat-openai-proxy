@@ -30,6 +30,38 @@ DEFAULT_TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "write_file",
+            "description": "Create or overwrite a text file (UTF-8); parent dirs are created",
+            "parameters": {
+                "type": "object",
+                "required": ["path", "content"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string", "description": "full new file body"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "patch",
+            "description": "Replace old_string with new_string in an existing UTF-8 file",
+            "parameters": {
+                "type": "object",
+                "required": ["path", "old_string", "new_string"],
+                "properties": {
+                    "path": {"type": "string"},
+                    "old_string": {"type": "string"},
+                    "new_string": {"type": "string"},
+                    "replace_all": {"type": "boolean", "description": "replace every match; default one"},
+                },
+            },
+        },
+    },
 ]
 
 
@@ -67,6 +99,39 @@ def read_dir(path: str) -> str:
         return f"read_dir error: {e}"
 
 
+def write_file(path: str, content: str | None) -> str:
+    try:
+        target = _resolved_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        text = "" if content is None else (content if isinstance(content, str) else str(content))
+        target.write_text(text, encoding="utf-8")
+        return f"write_file: ok: {target} ({len(text)} chars)"
+    except Exception as e:
+        return f"write_file error: {e}"
+
+
+def patch(path: str, old_string: str, new_string: str | None, *, replace_all: bool = False) -> str:
+    try:
+        old = old_string if isinstance(old_string, str) else str(old_string)
+        if not old:
+            return "patch: old_string must be non-empty"
+        target = _resolved_path(path)
+        if not target.is_file():
+            return f"patch: not a file: {path}"
+        text = target.read_text(encoding="utf-8", errors="replace")
+        new = "" if new_string is None else (new_string if isinstance(new_string, str) else str(new_string))
+        if old not in text:
+            return "patch: old_string not found"
+        n = text.count(old)
+        if not replace_all and n > 1:
+            return f"patch: old_string not unique ({n} matches); use replace_all or more context"
+        out = text.replace(old, new) if replace_all else text.replace(old, new, 1)
+        target.write_text(out, encoding="utf-8")
+        return f"patch: ok: {target}"
+    except Exception as e:
+        return f"patch error: {e}"
+
+
 def _parse_tool_args(args: Any) -> dict[str, Any]:
     if args is None:
         return {}
@@ -94,6 +159,16 @@ def execute_tool_call(tool_call: dict[str, Any]) -> str:
         return read_file(str(args.get("path") or ""))
     if name == "read_dir":
         return read_dir(str(args.get("path") or ""))
+    if name == "write_file":
+        return write_file(str(args.get("path") or ""), args.get("content"))
+    if name == "patch":
+        ra = args.get("replace_all")
+        return patch(
+            str(args.get("path") or ""),
+            str(args.get("old_string") if args.get("old_string") is not None else ""),
+            args.get("new_string"),
+            replace_all=bool(ra),
+        )
     return f"unknown tool: {name}"
 
 

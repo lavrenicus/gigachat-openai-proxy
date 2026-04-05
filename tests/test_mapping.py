@@ -1,4 +1,11 @@
-from gigachat_openai_proxy.mapping import auth_header, openai_from_ollama, openai_from_text, openai_response, upstream_body
+from gigachat_openai_proxy.mapping import (
+    auth_header,
+    openai_from_ollama,
+    openai_from_text,
+    openai_response,
+    planner_completion_max_tokens,
+    upstream_body,
+)
 import json
 
 
@@ -18,6 +25,27 @@ def test_upstream_maps_model_and_optional_fields():
 def test_upstream_skips_none_optional():
     b = upstream_body({"messages": [], "temperature": None}, "X")
     assert "temperature" not in b and "max_tokens" not in b
+
+
+def test_planner_completion_max_tokens_floor():
+    assert planner_completion_max_tokens(30) == 512
+    assert planner_completion_max_tokens(None) == 2048
+    assert planner_completion_max_tokens(4096) == 4096
+
+
+def test_upstream_planner_sets_min_max_tokens():
+    b = upstream_body(
+        {"messages": [], "max_tokens": 30, "temperature": 0.1},
+        "GigaChat:latest",
+        planner=True,
+    )
+    assert b["max_tokens"] == 512
+    assert b["temperature"] == 0.1
+
+
+def test_upstream_planner_uses_client_when_above_min():
+    b = upstream_body({"messages": [], "max_tokens": 900}, "M", planner=True)
+    assert b["max_tokens"] == 900
 
 
 def test_openai_response_usage_fallback():

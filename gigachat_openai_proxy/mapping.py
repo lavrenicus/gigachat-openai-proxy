@@ -2,12 +2,23 @@ import json
 import time
 import uuid
 
+# Лимит клиента (например max_tokens=30 для title) не должен сжимать ответ планировщика (JSON).
+PLANNER_MAX_TOKENS_DEFAULT = 2048
+PLANNER_MAX_TOKENS_MIN = 512
 
-def upstream_body(req: dict, gigachat_model: str) -> dict:
+
+def planner_completion_max_tokens(client_max: int | None) -> int:
+    base = PLANNER_MAX_TOKENS_DEFAULT if client_max is None else int(client_max)
+    return max(base, PLANNER_MAX_TOKENS_MIN)
+
+
+def upstream_body(req: dict, gigachat_model: str, *, planner: bool = False) -> dict:
     out: dict = {"model": gigachat_model, "messages": req["messages"]}
     if "temperature" in req and req["temperature"] is not None:
         out["temperature"] = req["temperature"]
-    if "max_tokens" in req and req["max_tokens"] is not None:
+    if planner:
+        out["max_tokens"] = planner_completion_max_tokens(req.get("max_tokens"))
+    elif req.get("max_tokens") is not None:
         out["max_tokens"] = req["max_tokens"]
     return out
 

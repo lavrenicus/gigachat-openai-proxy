@@ -21,6 +21,28 @@ def test_parse_plan_tool():
     assert p["action"] == "tool" and p["tool"] == "read_file" and p["args"] == {"path": "x"}
 
 
+def test_parse_plan_write_file_short_form():
+    p = parse_plan(
+        json.dumps({"action": "write_file", "args": {"path": "a.txt", "content": "z"}}, ensure_ascii=False)
+    )
+    assert p == {"action": "write_file", "tool": None, "args": {"path": "a.txt", "content": "z"}, "answer": ""}
+
+
+def test_parse_plan_tool_unknown_rejected():
+    with pytest.raises(ValueError):
+        parse_plan(json.dumps({"action": "tool", "tool": "browser_navigate", "args": {}}))
+
+
+def test_parse_plan_patch_short_form():
+    p = parse_plan(
+        json.dumps(
+            {"action": "patch", "args": {"path": "a.txt", "old_string": "x", "new_string": "y"}},
+            ensure_ascii=False,
+        )
+    )
+    assert p["action"] == "patch" and p["args"]["old_string"] == "x"
+
+
 def test_parse_plan_read_dir_short_form():
     p = parse_plan(json.dumps({"action": "read_dir", "args": {"path": "gigachat_openai_proxy"}}))
     assert p == {"action": "read_dir", "tool": None, "args": {"path": "gigachat_openai_proxy"}, "answer": ""}

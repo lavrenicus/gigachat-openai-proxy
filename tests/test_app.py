@@ -73,9 +73,82 @@ class FakeGC:
         pass
 
 
+class FakeGCTitleDirect:
+    def __init__(self) -> None:
+        self.history: list[dict] = []
+
+    async def chat(self, body: dict) -> dict:
+        self.history.append(body)
+        return {
+            "choices": [{"message": {"role": "assistant", "content": "Todo File Chat"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3},
+        }
+
+    async def aclose(self) -> None:
+        pass
+
+
 @pytest.fixture
 def fake_gc():
     return FakeGC()
+
+
+@pytest.mark.asyncio
+async def test_title_generation_bypasses_planner():
+    s = Settings(gigachat_authorization_key="k")
+    gc = FakeGCTitleDirect()
+    app.dependency_overrides[gc_client] = lambda: gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gigachat",
+                    "max_tokens": 30,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Given the following please reply with a title for the chat that is 3-4 words.\n\nHello",
+                        }
+                    ],
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "Todo File Chat"
+        assert len(gc.history) == 1
+        assert gc.history[0]["max_tokens"] == 30
+        assert not str(gc.history[0]["messages"][0].get("content", "")).startswith("Ты планировщик")
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_planner_uses_floor_max_tokens_when_client_small(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [{"action": "final", "answer": "ok"}]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gigachat",
+                    "max_tokens": 30,
+                    "messages": [{"role": "user", "content": "просто привет без title hints"}],
+                },
+            )
+        assert r.status_code == 200
+        assert fake_gc.history[0]["max_tokens"] >= 512
+    finally:
+        app.dependency_overrides.clear()
 
 
 @pytest.mark.asyncio
@@ -272,6 +345,65 @@ async def test_read_file_inline_fence_skips_disk(fake_gc: FakeGC):
         assert r.json()["choices"][0]["message"]["content"] == "done"
         tr = fake_gc.history[1]["messages"][-1]["content"].split(" ", 1)[1]
         assert json.loads(tr)["result"] == "###INLINE###"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_plan_patch_action_edits_file(tmp_path, fake_gc: FakeGC):
+    path = tmp_path / "p.txt"
+    path.write_text("alpha beta", encoding="utf-8")
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [
+        {
+            "action": "patch",
+            "args": {"path": str(path), "old_string": "alpha", "new_string": "gamma"},
+        },
+        {"action": "final", "answer": "patched"},
+    ]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "gigachat", "messages": [{"role": "user", "content": "fix"}]},
+            )
+        assert r.status_code == 200
+        assert path.read_text(encoding="utf-8") == "gamma beta"
+        tr = fake_gc.history[1]["messages"][-1]["content"].split(" ", 1)[1]
+        assert json.loads(tr)["tool"] == "patch"
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_plan_write_file_action_writes_file(tmp_path, fake_gc: FakeGC):
+    path = tmp_path / "t.md"
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [
+        {"action": "write_file", "args": {"path": str(path), "content": "- item"}},
+        {"action": "final", "answer": "done"},
+    ]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "gigachat", "messages": [{"role": "user", "content": "save"}]},
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "done"
+        assert path.read_text(encoding="utf-8") == "- item"
+        tr = fake_gc.history[1]["messages"][-1]["content"].split(" ", 1)[1]
+        assert json.loads(tr)["tool"] == "write_file"
     finally:
         app.dependency_overrides.clear()
 
