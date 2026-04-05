@@ -53,6 +53,23 @@ def openai_from_ollama(ollama_json: dict, client_model: str) -> dict:
     }
 
 
+def openai_from_text(content: str, client_model: str) -> dict:
+    return {
+        "id": f"chatcmpl-{uuid.uuid4().hex}",
+        "object": "chat.completion",
+        "created": int(time.time()),
+        "model": client_model,
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop",
+            }
+        ],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+    }
+
+
 def openai_response(gc: dict, client_model: str) -> dict:
     ch0 = gc["choices"][0]
     msg = ch0["message"]

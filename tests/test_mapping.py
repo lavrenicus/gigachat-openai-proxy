@@ -1,4 +1,4 @@
-from gigachat_openai_proxy.mapping import auth_header, openai_from_ollama, openai_response, upstream_body
+from gigachat_openai_proxy.mapping import auth_header, openai_from_ollama, openai_from_text, openai_response, upstream_body
 import json
 
 
@@ -42,6 +42,12 @@ def test_openai_response_passes_usage():
         "gigachat",
     )
     assert r["usage"] == {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 3}
+
+
+def test_openai_from_text():
+    r = openai_from_text("x", "gigachat")
+    assert r["choices"][0]["message"]["content"] == "x"
+    assert r["usage"]["total_tokens"] == 0
 
 
 def test_openai_from_ollama():

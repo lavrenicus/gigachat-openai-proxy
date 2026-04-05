@@ -1,14 +1,15 @@
 # gigachat-openai-proxy
 
-Тонкий прокси **OpenAI Chat Completions**: обычный диалог идёт в **GigaChat**, запросы с признаками tool/агента — в **Ollama** (локально). Ответ всегда в формате OpenAI, Continue видит одну модель.
+Тонкий прокси **OpenAI Chat Completions**: внешний цикл **GigaChat (Planner)** → при `action=tool` результат попадает в контекст как **user-сообщение** с префиксом **`[tool_result]`** и JSON → снова Planner, пока не будет **`final`**. Инструменты **`read_file` / `read_dir`** выполняются детерминированно на стороне прокси (без Ollama в оркестрации). Ответ всегда в формате OpenAI, Continue видит одну модель.
 
 ## Возможности
 
 - Один синхронный маршрут: `POST /v1/chat/completions`
-- Роутинг: эвристика по тексту сообщений (маркеры вроде `read_file`, `прочитай файл`, …) или `system` с подстрокой `tool` → **только Ollama**; иначе → **только GigaChat** (без смешивания в одном запросе)
-- Перед GigaChat из списка сообщений убираются роли `system`, чтобы не провоцировать лишние tool-ответы
+- Каждый запрос: **Planner-loop** (GigaChat, строгий JSON: `action=tool|final`); шаг tool → **executor** в коде → в контекст добавляется **`user`: `[tool_result] {...}`** (не `system`: у GigaChat **только одно** сообщение `system` и **только первое** в массиве) → следующий вызов Planner
+- Поле `tools` в запросе **не обязательно** для работы инструментов (схемы клиента можно игнорировать; исполняются только `read_file` и `read_dir`)
+- Перед первым шагом из пользовательских сообщений убираются клиентские `system` (как раньше); служебные `[tool_result]` идут ролью `user` и не ломают порядок для API
 - GigaChat: `GIGACHAT_MODEL` (по умолчанию `GigaChat:latest`), OAuth и кеш токена
-- Ollama: `POST {OLLAMA_BASE}/api/chat`, модель `OLLAMA_MODEL` (по умолчанию `qwen2.5-coder:7b`)
+- Ollama в HTTP-цикле чата **не используется** (клиент в приложении всё ещё создаётся для совместимости; см. `ollama_tools.ollama_tool_loop` при необходимости отдельно)
 - Без streaming и без отдельного OpenAI tool-calling протокола на стороне прокси
 
 ## Требования
@@ -49,7 +50,7 @@ poetry run serve --debug
 
 Флаги TLS для `serve` (не через `.env`): `--mincifry-ca` (докачать PEM при старте), `--no-verify-ssl` (только если осознанно нужно обойти проверку).
 
-Флаг ищется как отдельный аргумент `--debug` в `sys.argv`, поэтому он срабатывает даже при предупреждении Poetry про «script is not installed». При включённом debug для логгера `gigachat_openai_proxy` добавляется вывод в stderr, чтобы строки upstream не терялись рядом с логами uvicorn.
+Флаг ищется как отдельный аргумент `--debug` в `sys.argv`, поэтому он срабатывает даже при предупреждении Poetry про «script is not installed». При включённом debug для логгера `gigachat_openai_proxy` добавляется вывод в stderr, чтобы строки upstream не терялись рядом с логами uvicorn. Дополнительно пишутся шаги агента: `agent step=N plan=...`, `tool_result=...`, `final_answer=...` (длинные строки обрезаются).
 
 Команда `serve` — это entry point из `pyproject.toml`; он появляется в venv только после установки **самого проекта**. Сделайте из корня репозитория:
 

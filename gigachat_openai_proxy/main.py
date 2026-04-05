@@ -10,13 +10,82 @@ from pydantic import BaseModel
 
 from gigachat_openai_proxy.app_config import AppConfig
 from gigachat_openai_proxy.client import GigachatClient
-from gigachat_openai_proxy.mapping import openai_from_ollama, openai_response, upstream_body
-from gigachat_openai_proxy.ollama_client import ollama_chat
+from gigachat_openai_proxy.mapping import openai_from_text, openai_response, upstream_body
+from gigachat_openai_proxy.ollama_tools import run_executor
+from gigachat_openai_proxy.planner import (
+    ACTION_PLANNER_FAILED,
+    PLANNER_FALLBACK_ANSWER,
+    PLAN_DIRECT_TOOLS,
+    run_planner,
+)
 from gigachat_openai_proxy.pipeline import Envelope, Pipeline
-from gigachat_openai_proxy.router import filter_gigachat_messages, use_ollama
+from gigachat_openai_proxy.router import filter_gigachat_messages
 from gigachat_openai_proxy.settings import Settings
 from gigachat_openai_proxy.tls import verify_arg
 from gigachat_openai_proxy.debug import pretty_openai_chat_response
+
+_MAX_AGENT_STEPS = 16
+_LOG_RESULT_LEN = 4000
+
+
+class ChatReq(BaseModel):
+    model: str = "gigachat"
+    messages: list[dict]
+    temperature: float | None = None
+    max_tokens: int | None = None
+    stream: bool | None = None
+    tools: list[dict] | None = None
+
+
+def _trunc_log(s: str, limit: int = _LOG_RESULT_LEN) -> str:
+    return s if len(s) <= limit else f"{s[:limit]}\n...[truncated]"
+
+
+async def _gigachat_delegate_planner_fail(
+    gc: GigachatClient, req: ChatReq, dump: dict, gigachat_model: str
+) -> dict:
+    sys = (
+        "Служебно: внутренний JSON-планировщик не вернул валидный ответ после нескольких попыток.\n"
+        f"Ориентир по смыслу ответа пользователю (не цитируй дословно): {PLANNER_FALLBACK_ANSWER}\n"
+        "Сформулируй один ответ по переписке ниже своими словами, без JSON, без слов «планировщик» и без технических деталей."
+    )
+    msgs = [{"role": "system", "content": sys}, *filter_gigachat_messages(req.messages)]
+    raw = await gc.chat(upstream_body({**dump, "messages": msgs}, gigachat_model))
+    return openai_response(raw, req.model)
+
+
+async def _planner_agent(
+    gc: GigachatClient, req: ChatReq, dump: dict, gigachat_model: str, *, debug: bool = False
+) -> dict:
+    _lg = logging.getLogger("gigachat_openai_proxy")
+    state = filter_gigachat_messages(req.messages)
+    for step in range(_MAX_AGENT_STEPS):
+        plan = await run_planner(gc, dump, gigachat_model, dialog=state)
+        if debug:
+            _lg.info("agent step=%s plan=%s", step, _trunc_log(json.dumps(plan, ensure_ascii=False)))
+        if plan["action"] == ACTION_PLANNER_FAILED:
+            if debug:
+                _lg.info("agent step=%s planner parse failed; delegating to gigachat", step)
+            return await _gigachat_delegate_planner_fail(gc, req, dump, gigachat_model)
+        if plan["action"] == "final":
+            if debug:
+                _lg.info("agent step=%s final_answer=%s", step, _trunc_log(str(plan.get("answer") or "")))
+            return openai_from_text(plan["answer"], req.model)
+        orig = plan["action"]
+        if orig in PLAN_DIRECT_TOOLS:
+            _lg.info("Mapped action '%s' → tool='%s'", orig, orig)
+            plan = {**plan, "action": "tool", "tool": orig}
+        res = run_executor(plan["tool"], plan["args"])
+        payload = json.dumps(
+            {"tool": plan["tool"], "args": plan["args"], "result": res}, ensure_ascii=False
+        )
+        if debug:
+            _lg.info("agent step=%s tool_result=%s", step, _trunc_log(payload))
+        # GigaChat: только одно system и оно только первое — служебный контекст в user.
+        state = [*state, {"role": "user", "content": f"[tool_result] {payload}"}]
+    if debug:
+        _lg.info("agent stopped: max_steps=%s", _MAX_AGENT_STEPS)
+    return openai_from_text("Лимит шагов планировщика исчерпан.", req.model)
 
 
 def _setup_proxy_debug_logging() -> None:
@@ -27,15 +96,6 @@ def _setup_proxy_debug_logging() -> None:
         h.setFormatter(logging.Formatter("%(levelname)s:%(name)s:%(message)s"))
         lg.addHandler(h)
     lg.propagate = False
-
-
-class ChatReq(BaseModel):
-    model: str = "gigachat"
-    messages: list[dict]
-    temperature: float | None = None
-    max_tokens: int | None = None
-    stream: bool | None = None
-    tools: list[dict] | None = None
 
 
 def gc_client(request: Request) -> GigachatClient:
@@ -96,7 +156,6 @@ def _mount_routes(app: FastAPI) -> None:
         req: ChatReq,
         gc: GigachatClient = Depends(gc_client),
         s: Settings = Depends(settings),
-        ohttp: httpx.AsyncClient = Depends(ollama_http),
         cfg: AppConfig = Depends(config),
     ) -> Any:
         try:
@@ -106,17 +165,7 @@ def _mount_routes(app: FastAPI) -> None:
                     "proxy incoming /v1/chat/completions %s", pretty_openai_chat_response(dump)
                 )
             wants_stream = bool(req.stream)
-            if use_ollama(req.messages):
-                raw_o = await ollama_chat(ohttp, s, req.messages, dump, debug=cfg.debug)
-                out = openai_from_ollama(raw_o, req.model)
-                return (
-                    JSONResponse(out)
-                    if (not wants_stream or out["choices"][0]["message"].get("tool_calls"))
-                    else StreamingResponse(_openai_chat_to_sse(out), media_type="text/event-stream")
-                )
-            dump["messages"] = filter_gigachat_messages(dump["messages"])
-            raw = await gc.chat(upstream_body(dump, s.gigachat_model))
-            out = openai_response(raw, req.model)
+            out = await _planner_agent(gc, req, dump, s.gigachat_model, debug=cfg.debug)
             if cfg.debug:
                 logging.getLogger("gigachat_openai_proxy").info(
                     "proxy returning OpenAI JSON\n%s", pretty_openai_chat_response(out)
