@@ -8,25 +8,49 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from gigachat_openai_proxy.agent_context import (
+    SOFT_STEP_LIMIT_BEFORE_NUDGE,
+    compress_planner_state,
+    count_recent_failed_patch_results,
+    first_user_task_text,
+    internal_critic_final_without_mutation,
+    record_tool_for_known_files,
+    soft_resource_nudge_message,
+    verify_final_against_edit_intent,
+)
 from gigachat_openai_proxy.app_config import AppConfig
 from gigachat_openai_proxy.client import GigachatClient
 from gigachat_openai_proxy.inline_file import inline_file_body_for_path
 from gigachat_openai_proxy.mapping import openai_from_text, openai_response, upstream_body
-from gigachat_openai_proxy.ollama_tools import run_executor
 from gigachat_openai_proxy.planner import (
     ACTION_PLANNER_FAILED,
     PLANNER_FALLBACK_ANSWER,
-    PLAN_DIRECT_TOOLS,
+    effective_tool_name,
     run_planner,
+    state_has_tool_result,
+    tool_result_message,
 )
+from gigachat_openai_proxy.tools import TOOL_REGISTRY
 from gigachat_openai_proxy.pipeline import Envelope, Pipeline
 from gigachat_openai_proxy.router import filter_gigachat_messages
 from gigachat_openai_proxy.settings import Settings
 from gigachat_openai_proxy.tls import verify_arg
 from gigachat_openai_proxy.debug import pretty_openai_chat_response
 
-_MAX_AGENT_STEPS = 16
+_MAX_AGENT_STEPS = 72
+_MAX_CONSECUTIVE_DUPLICATE_SKIPS = 5
+_MAX_INTERNAL_CRITIC_ON_FINAL = 3
 _LOG_RESULT_LEN = 4000
+
+
+def _stuck_duplicate_loop_user_message() -> dict:
+    return {
+        "role": "user",
+        "content": (
+            "[tool_error] stuck in loop: same tool+args repeated without progress; "
+            "use a different tool/path or action=final with an answer."
+        ),
+    }
 
 
 class ChatReq(BaseModel):
@@ -88,8 +112,17 @@ async def _planner_agent(
 ) -> dict:
     _lg = logging.getLogger("gigachat_openai_proxy")
     state = filter_gigachat_messages(req.messages)
+    task_text = first_user_task_text(state)
+    consecutive_dup_skips = 0
+    known_files: dict[str, str] = {}
+    soft_nudge_sent = False
+    final_critic_rounds = 0
     for step in range(_MAX_AGENT_STEPS):
-        plan = await run_planner(gc, dump, gigachat_model, dialog=state)
+        if step == SOFT_STEP_LIMIT_BEFORE_NUDGE and not soft_nudge_sent:
+            state = [*state, soft_resource_nudge_message()]
+            soft_nudge_sent = True
+        planning_dialog = compress_planner_state(state, known_files=known_files)
+        plan = await run_planner(gc, dump, gigachat_model, dialog=planning_dialog)
         if debug:
             _lg.info("agent step=%s plan=%s", step, _trunc_log(json.dumps(plan, ensure_ascii=False)))
         if plan["action"] == ACTION_PLANNER_FAILED:
@@ -97,25 +130,69 @@ async def _planner_agent(
                 _lg.info("agent step=%s planner parse failed; delegating to gigachat", step)
             return await _gigachat_delegate_planner_fail(gc, req, dump, gigachat_model)
         if plan["action"] == "final":
+            ans = str(plan.get("answer") or "")
             if debug:
-                _lg.info("agent step=%s final_answer=%s", step, _trunc_log(str(plan.get("answer") or "")))
-            return openai_from_text(plan["answer"], req.model)
-        orig = plan["action"]
-        if orig in PLAN_DIRECT_TOOLS:
-            _lg.info("Mapped action '%s' → tool='%s'", orig, orig)
-            plan = {**plan, "action": "tool", "tool": orig}
-        tool, args = plan["tool"], plan["args"] if isinstance(plan.get("args"), dict) else {}
-        if tool == "read_file":
-            pth = str((args or {}).get("path") or "")
-            inl = inline_file_body_for_path(state, pth)
-            res = inl if inl is not None else run_executor(tool, args)
+                _lg.info("agent step=%s final_answer=%s", step, _trunc_log(ans))
+            if verify_final_against_edit_intent(plan, task_text, known_files):
+                return openai_from_text(ans, req.model)
+            if final_critic_rounds >= _MAX_INTERNAL_CRITIC_ON_FINAL:
+                if debug:
+                    _lg.info("agent step=%s final forced after internal critic budget", step)
+                return openai_from_text(ans, req.model)
+            final_critic_rounds += 1
+            state = [
+                *state,
+                internal_critic_final_without_mutation(
+                    draft=ans,
+                    known_files=known_files,
+                    failed_patches=count_recent_failed_patch_results(state),
+                    step=step,
+                    max_steps=_MAX_AGENT_STEPS,
+                ),
+            ]
+            if debug:
+                _lg.info("agent step=%s internal_critic injected (edit intent without write/patch)", step)
+            continue
+        name = effective_tool_name(plan)
+        args = plan["args"] if isinstance(plan.get("args"), dict) else {}
+        if name in TOOL_REGISTRY:
+            if state_has_tool_result(state, name, args):
+                consecutive_dup_skips += 1
+                if debug:
+                    _lg.info(
+                        "agent step=%s skip duplicate tool_result tool=%s consecutive=%s",
+                        step,
+                        name,
+                        consecutive_dup_skips,
+                    )
+                if consecutive_dup_skips >= _MAX_CONSECUTIVE_DUPLICATE_SKIPS:
+                    state = [*state, _stuck_duplicate_loop_user_message()]
+                    consecutive_dup_skips = 0
+                    if debug:
+                        _lg.info("agent step=%s injected stuck_duplicate_loop hint", step)
+                continue
+            consecutive_dup_skips = 0
+            _lg.info("Mapped action '%s' → tool='%s'", name, name)
+            if name == "read_file":
+                pth = str(args.get("path") or "")
+                inl = inline_file_body_for_path(state, pth)
+                res = inl if inl is not None else TOOL_REGISTRY[name](args)
+            else:
+                res = TOOL_REGISTRY[name](args)
+            msg = tool_result_message(name, args, res)
+            record_tool_for_known_files(name, args, res, known_files)
+            if debug:
+                _lg.info("agent step=%s tool_result=%s", step, _trunc_log(msg["content"]))
+            state = [*state, msg]
         else:
-            res = run_executor(tool, args)
-        payload = json.dumps({"tool": tool, "args": args, "result": res}, ensure_ascii=False)
-        if debug:
-            _lg.info("agent step=%s tool_result=%s", step, _trunc_log(payload))
-        # GigaChat: только одно system и оно только первое — служебный контекст в user.
-        state = [*state, {"role": "user", "content": f"[tool_result] {payload}"}]
+            err = (
+                f'[tool_error] unknown action "{name}", '
+                f"available: {list(TOOL_REGISTRY.keys())}"
+            )
+            if debug:
+                _lg.info("agent step=%s %s", step, _trunc_log(err))
+            consecutive_dup_skips = 0
+            state = [*state, {"role": "user", "content": err}]
     if debug:
         _lg.info("agent stopped: max_steps=%s", _MAX_AGENT_STEPS)
     return openai_from_text("Лимит шагов планировщика исчерпан.", req.model)

@@ -16,7 +16,7 @@ async def test_gigachat_chat_refetches_token_on_401():
         if "/oauth" in str(req.url):
             return httpx.Response(
                 200,
-                json={"access_token": "tok", "expires_at": (time.time() + 7200) * 1000},
+                json={"access_token": "tok", "expires_at": time.time() + 7200},
             )
         chat_calls[0] += 1
         if chat_calls[0] == 1:

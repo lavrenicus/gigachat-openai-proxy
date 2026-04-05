@@ -2,11 +2,15 @@ import json
 
 import pytest
 
+import gigachat_openai_proxy.planner as planner_mod
 from gigachat_openai_proxy.planner import (
     ACTION_PLANNER_FAILED,
     parse_plan,
     planner_messages,
     run_planner,
+    state_has_tool_result,
+    tool_result_identity_key,
+    tool_result_message,
 )
 from gigachat_openai_proxy.router import filter_gigachat_messages
 
@@ -28,9 +32,14 @@ def test_parse_plan_write_file_short_form():
     assert p == {"action": "write_file", "tool": None, "args": {"path": "a.txt", "content": "z"}, "answer": ""}
 
 
-def test_parse_plan_tool_unknown_rejected():
-    with pytest.raises(ValueError):
-        parse_plan(json.dumps({"action": "tool", "tool": "browser_navigate", "args": {}}))
+def test_parse_plan_tool_unknown_accepted():
+    p = parse_plan(json.dumps({"action": "tool", "tool": "browser_navigate", "args": {}}))
+    assert p == {"action": "tool", "tool": "browser_navigate", "args": {}, "answer": ""}
+
+
+def test_parse_plan_unknown_action_short_form():
+    p = parse_plan(json.dumps({"action": "made_up", "args": {"x": 1}}))
+    assert p["action"] == "made_up" and p["args"] == {"x": 1}
 
 
 def test_parse_plan_patch_short_form():
@@ -84,6 +93,33 @@ def test_planner_messages_prefixed_system():
 class _BadPlannerGC:
     async def chat(self, body: dict) -> dict:
         return {"choices": [{"message": {"role": "assistant", "content": "просто текст"}}]}
+
+
+def test_retry_user_contains_braced_json_example():
+    assert '{"action":"read_dir","args":{"path":"..."}}' in planner_mod._RETRY_USER
+
+
+def test_state_has_tool_result_detects_same_tool_args():
+    st: list[dict] = []
+    assert not state_has_tool_result(st, "read_dir", {"path": "C:\\projects"})
+    st.append(tool_result_message("read_dir", {"path": "C:\\projects"}, '["a"]'))
+    assert state_has_tool_result(st, "read_dir", {"path": "C:\\projects"})
+
+
+def test_state_has_tool_result_same_args_different_key_order():
+    st = [tool_result_message("read_dir", {"path": "x", "extra": 1}, "[]")]
+    assert state_has_tool_result(st, "read_dir", {"extra": 1, "path": "x"})
+
+
+def test_state_has_tool_result_different_path():
+    st = [tool_result_message("read_dir", {"path": "a"}, "[]")]
+    assert not state_has_tool_result(st, "read_dir", {"path": "b"})
+
+
+def test_tool_result_identity_key_stable():
+    m = tool_result_message("read_file", {"path": "z"}, "x")
+    k1 = tool_result_identity_key(m)
+    assert k1 and k1 == tool_result_identity_key(m)
 
 
 @pytest.mark.asyncio

@@ -294,6 +294,83 @@ async def test_plan_read_dir_action_executes_read_dir(caplog, fake_gc: FakeGC):
 
 
 @pytest.mark.asyncio
+async def test_duplicate_read_dir_not_appended_twice_to_planner_context(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    p = {"action": "read_dir", "args": {"path": "gigachat_openai_proxy"}}
+    fake_gc.plans = [p, p, {"action": "final", "answer": "ok"}]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "gigachat", "messages": [{"role": "user", "content": "x"}]},
+            )
+        assert r.status_code == 200
+        last_msgs = fake_gc.history[-1]["messages"]
+        n = sum(1 for m in last_msgs if str(m.get("content", "")).startswith("[tool_result]"))
+        assert n == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_duplicate_skips_inject_stuck_loop_hint(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    p = {"action": "read_dir", "args": {"path": "gigachat_openai_proxy"}}
+    fake_gc.plans = [p] * 6 + [{"action": "final", "answer": "done"}]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "gigachat", "messages": [{"role": "user", "content": "x"}]},
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "done"
+        assert any(
+            "[tool_error]" in str(m.get("content", "")) and "stuck in loop" in str(m.get("content", ""))
+            for body in fake_gc.history
+            for m in body.get("messages") or []
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_unknown_plan_action_appends_tool_error_then_continues(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [
+        {"action": "phantom_op", "args": {}},
+        {"action": "final", "answer": "recovered"},
+    ]
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={"model": "gigachat", "messages": [{"role": "user", "content": "x"}]},
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "recovered"
+        m2 = fake_gc.history[1]["messages"]
+        assert any(str(m.get("content", "")).startswith("[tool_error]") for m in m2)
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
 async def test_custom_model_name_still_runs_planner(fake_gc: FakeGC):
     s = Settings(gigachat_authorization_key="k")
     fake_gc.plans = [{"action": "final", "answer": "ok"}]
@@ -524,6 +601,35 @@ async def test_tools_pass_through_still_planner_loop(fake_gc: FakeGC):
         assert r.status_code == 200
         assert r.json()["choices"][0]["message"]["content"] == "ok"
         assert len(fake_gc.history) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+@pytest.mark.asyncio
+async def test_final_internal_critic_when_edit_intent_without_write(fake_gc: FakeGC):
+    s = Settings(gigachat_authorization_key="k")
+    fake_gc.plans = [{"action": "final", "answer": "done"}] * 6
+    app.dependency_overrides[gc_client] = lambda: fake_gc
+    app.dependency_overrides[settings] = lambda: s
+    app.dependency_overrides[config] = lambda: AppConfig()
+    app.dependency_overrides[ollama_http] = _ollama_unused_stub
+    try:
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://t") as ac:
+            r = await ac.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gigachat",
+                    "messages": [{"role": "user", "content": "добавь строку в todo.md"}],
+                },
+            )
+        assert r.status_code == 200
+        assert r.json()["choices"][0]["message"]["content"] == "done"
+        assert any(
+            "[internal_critic]" in str(m.get("content", ""))
+            for body in fake_gc.history
+            for m in body.get("messages") or []
+        )
     finally:
         app.dependency_overrides.clear()
 

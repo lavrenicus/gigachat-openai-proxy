@@ -2,41 +2,105 @@ import json
 
 from gigachat_openai_proxy.mapping import upstream_body
 from gigachat_openai_proxy.router import filter_gigachat_messages
+from gigachat_openai_proxy.tools import TOOL_REGISTRY
 
-# Текст не показывается пользователю напрямую — уходит в промпт основной модели при срыве парсера.
 PLANNER_FALLBACK_ANSWER = (
     "Не удалось корректно распарсить план. Попробуй переформулировать запрос."
 )
 
 ACTION_PLANNER_FAILED = "planner_failed"
 
-PLAN_DIRECT_TOOLS = frozenset({"read_file", "read_dir", "write_file", "patch"})
+TOOL_RESULT_PREFIX = "[tool_result] "
 
-PLANNER_SYSTEM = (
-    "Ты планировщик. Нужны read_file/read_dir/write_file/patch или достаточно final с текстом пользователю.\n"
+PLANNER_PROMPT_TEMPLATE = (
+    "Ты планировщик. Нужны инструменты ({available_actions}) или достаточно final с текстом пользователю.\n"
     "В диалоге могут быть user-сообщения с префиксом [tool_result] — JSON с полями tool, args, result; "
     "учитывай их при следующем решении.\n"
-    "Если в user-тексте уже есть блок ```имя_файла с новой строкой и далее содержимое того же файла, "
+    "Если в user-тексте уже есть блок ```имя_файла с новой строки и далее содержимое того же файла, "
     "не выбирай read_file для этого пути — верни action=final и ответ по уже приведённому содержимому.\n"
     "Если read_file вернул not found, а раньше в user был такой фенс с тем же именем файла — снова final по фенсу, "
     "не повторяй read_file с тем же путём.\n"
     "write_file: args.path, args.content — полная перезапись UTF-8.\n"
     "patch: args.path, args.old_string (непустая), args.new_string; опционально args.replace_all (bool) — "
     "одна замена или все вхождения; при нескольких совпадениях без replace_all инструмент вернёт ошибку.\n"
-    "Только action: final, tool, read_file, read_dir, write_file, patch (иные запрещены).\n"
+    "action: final (ответ в answer), tool (поля tool+args) или короткая форма с action из списка инструментов. "
+    "Неизвестное имя инструмента сервер отметит [tool_error] — перепланируй.\n"
     "Ты ОБЯЗАН отвечать только одним валидным JSON-объектом. Запрещено: любой текст вне JSON, комментарии, markdown. "
     "Если не уверен — всё равно верни JSON (например action=final с пояснением в answer). "
     "При нарушении формата запрос будет отклонён.\n"
-    'Схема: {"action":"tool"|"final"|"read_file"|"read_dir"|"write_file"|"patch","tool":string|null,"args":object|null,"answer":string|null}\n'
-    "Сокращение: action read_file/read_dir/write_file/patch с полем args (без tool).\n"
+    "Схема: объект с полями action (строка), при final — answer (строка); при tool — tool (строка) и args (объект); "
+    "при короткой форме инструмента — action и args (объект). Имена инструментов: {available_actions}.\n"
     "При action=final поле answer — готовый ответ пользователю (строка).\n"
-    "При action=tool обязательны tool (read_file, read_dir, write_file или patch) и args (объект)."
+    "При action=tool обязательны tool (строка) и args (объект)."
 )
 
+
+def _available_actions() -> str:
+    return "|".join(TOOL_REGISTRY.keys())
+
+
+PLANNER_SYSTEM = PLANNER_PROMPT_TEMPLATE.format(available_actions=_available_actions())
 _RETRY_USER = (
-    "Ответ невалиден. Верни заново ТОЛЬКО один JSON без текста вокруг, по схеме: "
-    '{"action":"tool"|"final"|"read_file"|"read_dir"|"write_file"|"patch",...}'
+    "Ответ невалиден. Верни заново ТОЛЬКО один JSON без текста вокруг, "
+    'по схеме: {"action":"read_dir","args":{"path":"..."}}'
 )
+
+
+def _tool_args_key(tool: str, args: dict) -> str:
+    return json.dumps({"tool": tool, "args": args}, sort_keys=True, ensure_ascii=False)
+
+
+def state_has_tool_result(state: list[dict], tool: str, args: dict) -> bool:
+    want = _tool_args_key(tool, args)
+    for m in state:
+        if m.get("role") != "user":
+            continue
+        c = str(m.get("content") or "")
+        if not c.startswith(TOOL_RESULT_PREFIX):
+            continue
+        try:
+            body = json.loads(c[len(TOOL_RESULT_PREFIX) :])
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(body, dict):
+            continue
+        t, a = body.get("tool"), body.get("args")
+        if not isinstance(t, str) or not isinstance(a, dict):
+            continue
+        if _tool_args_key(t, a) == want:
+            return True
+    return False
+
+
+def tool_result_identity_key(message: dict) -> str | None:
+    if message.get("role") != "user":
+        return None
+    c = str(message.get("content") or "")
+    if not c.startswith(TOOL_RESULT_PREFIX):
+        return None
+    try:
+        body = json.loads(c[len(TOOL_RESULT_PREFIX) :])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    t, a = body.get("tool"), body.get("args")
+    if not isinstance(t, str) or not isinstance(a, dict):
+        return None
+    return _tool_args_key(t, a)
+
+
+def tool_result_message(tool: str, args: dict, result: str) -> dict:
+    payload = json.dumps({"tool": tool, "args": args, "result": result}, ensure_ascii=False)
+    return {"role": "user", "content": f"{TOOL_RESULT_PREFIX}{payload}"}
+
+
+def effective_tool_name(plan: dict) -> str:
+    return str(plan.get("tool") or "") if plan.get("action") == "tool" else str(plan.get("action") or "")
+
+
+def _coerce_args(v) -> dict:
+    return v if isinstance(v, dict) else {}
 
 
 def _strip_markdown_fence(t: str) -> str:
@@ -69,24 +133,23 @@ def _extract_json_object(text: str) -> dict:
 def parse_plan(text: str) -> dict:
     d = _extract_json_object(text)
     action = d.get("action")
+    if not isinstance(action, str) or not action.strip():
+        raise ValueError("action")
+    action = action.strip()
     if action == "final":
         ans = d.get("answer")
         if ans is None:
             raise ValueError("answer")
         return {"action": "final", "answer": str(ans), "tool": None, "args": {}}
     if action == "tool":
-        tool, args = d.get("tool"), d.get("args")
-        if not tool or not isinstance(tool, str) or tool not in PLAN_DIRECT_TOOLS:
+        tool = d.get("tool")
+        if not tool or not isinstance(tool, str) or not tool.strip():
             raise ValueError("tool")
-        if not isinstance(args, dict):
-            raise ValueError("args")
-        return {"action": "tool", "tool": tool, "args": args, "answer": ""}
-    if action in PLAN_DIRECT_TOOLS:
         args = d.get("args")
         if not isinstance(args, dict):
             raise ValueError("args")
-        return {"action": action, "tool": None, "args": args, "answer": ""}
-    raise ValueError("action")
+        return {"action": "tool", "tool": tool.strip(), "args": args, "answer": ""}
+    return {"action": action, "tool": None, "args": _coerce_args(d.get("args")), "answer": ""}
 
 
 def planner_messages(dialog_messages: list[dict]) -> list[dict]:
